@@ -1,0 +1,140 @@
+# Save this as app.py
+import streamlit as st
+import pandas as pd
+import random
+from datetime import datetime, timedelta
+from io import BytesIO
+from streamlit_calendar import calendar
+
+st.set_page_config(page_title="Clinic & Inpatient Scheduler", layout="wide")
+st.title("📅 Clinic & Inpatient Schedule Generator (with Vacation Blocking + Calendar)")
+
+st.header("Step 1: Enter Providers")
+providers = st.text_area("Enter provider names (one per line)").split("\n")
+providers = [p.strip() for p in providers if p.strip()]  # Clean empty lines
+
+st.header("Step 2: Choose Coverage Days")
+clinic_days = st.multiselect(
+    "Select Clinic Days", 
+    ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"], 
+    default=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+)
+inpatient_days = st.multiselect(
+    "Select Inpatient Days", 
+    ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], 
+    default=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+)
+
+st.header("Step 3: Upload Vacation File (Optional)")
+vacation_file = st.file_uploader("Upload a CSV with columns: Provider, Start Date, End Date", type=["csv"])
+
+st.header("Step 4: Set Schedule Range")
+col1, col2 = st.columns(2)
+with col1:
+    start_date = st.date_input("Start Date", value=datetime.today())
+with col2:
+    end_date = st.date_input("End Date", value=start_date + timedelta(days=6))
+
+# Helper function
+def is_available(provider, date, vacation_df):
+    if provider not in vacation_df["Provider"].values:
+        return True
+    provider_vacations = vacation_df[vacation_df["Provider"] == provider]
+    for _, row in provider_vacations.iterrows():
+        if row["Start Date"] <= date <= row["End Date"]:
+            return False
+    return True
+
+# Generate the schedule
+if st.button("🚀 Generate Schedule"):
+    if not providers:
+        st.error("Please enter at least one provider!")
+    elif start_date > end_date:
+        st.error("End date must be after start date.")
+    else:
+        # Load vacations if uploaded
+        if vacation_file:
+            vacations = pd.read_csv(vacation_file, parse_dates=["Start Date", "End Date"])
+        else:
+            vacations = pd.DataFrame(columns=["Provider", "Start Date", "End Date"])
+
+        date_range = pd.date_range(start=start_date, end=end_date)
+
+        clinic_schedule = {}
+        inpatient_schedule = {}
+
+        for date in date_range:
+            weekday = date.strftime("%A")
+            
+            available_providers = [p for p in providers if is_available(p, date, vacations)]
+            
+            if weekday in clinic_days:
+                if available_providers:
+                    clinic_provider = random.choice(available_providers)
+                else:
+                    clinic_provider = "Unassigned"
+                clinic_schedule[date] = clinic_provider
+
+            if weekday in inpatient_days:
+                if available_providers:
+                    inpatient_provider = random.choice(available_providers)
+                else:
+                    inpatient_provider = "Unassigned"
+                inpatient_schedule[date] = inpatient_provider
+
+        schedule = pd.DataFrame({
+            "Date": date_range,
+            "Day": [d.strftime("%A") for d in date_range],
+            "Clinic Provider": [clinic_schedule.get(d, "-") for d in date_range],
+            "Inpatient Provider": [inpatient_schedule.get(d, "-") for d in date_range]
+        })
+
+        st.success("✅ Schedule generated successfully!")
+
+        st.subheader("📋 Table View")
+        st.dataframe(schedule, use_container_width=True)
+
+        # Calendar View
+        st.subheader("🗓️ Interactive Calendar View")
+
+        calendar_events = []
+        for _, row in schedule.iterrows():
+            if row["Clinic Provider"] != "Unassigned" and row["Clinic Provider"] != "-":
+                calendar_events.append({
+                    "title": f"Clinic: {row['Clinic Provider']}",
+                    "start": row["Date"].strftime("%Y-%m-%d"),
+                    "allDay": True,
+                    "color": "#1f77b4"  # Blue
+                })
+            if row["Inpatient Provider"] != "Unassigned" and row["Inpatient Provider"] != "-":
+                calendar_events.append({
+                    "title": f"Inpatient: {row['Inpatient Provider']}",
+                    "start": row["Date"].strftime("%Y-%m-%d"),
+                    "allDay": True,
+                    "color": "#ff7f0e"  # Orange
+                })
+
+        calendar_options = {
+            "initialView": "dayGridMonth",
+            "editable": False,
+            "headerToolbar": {
+                "left": "prev,next today",
+                "center": "title",
+                "right": "dayGridMonth,timeGridWeek,timeGridDay"
+            }
+        }
+
+        calendar(events=calendar_events, options=calendar_options)
+
+        # Excel download
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            schedule.to_excel(writer, index=False, sheet_name="Schedule")
+        excel_data = output.getvalue()
+
+        st.download_button(
+            label="⬇️ Download Schedule as Excel",
+            data=excel_data,
+            file_name="clinic_inpatient_schedule.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
